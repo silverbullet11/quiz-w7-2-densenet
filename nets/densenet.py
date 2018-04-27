@@ -38,8 +38,8 @@ def block(net, layers, growth, scope='block'):
         It has been noted that a 1 x 1 convolution can be introduced as bottleneck layer
             before each 3 x 3 convolution to reduce the number of input feature-maps, and thus to improve computational efficiency.
     :param net:
-    :param layers:
-    :param growth:
+    :param layers: 层数。每个layer包含一个稠密链接的组合和一个转换层（transition layer）。
+    :param growth: growth可以控制每层输出的特征数，防止层数增加的同时产生过多的特征，从而影响模型性能。
     :param scope:
     :return:
     """
