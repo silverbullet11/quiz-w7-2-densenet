@@ -13,6 +13,18 @@ def trunc_normal(stddev): return tf.truncated_normal_initializer(stddev=stddev)
 
 
 def bn_act_conv_drp(current, num_outputs, kernel_size, scope='block'):
+    """
+        Composite function, consists of 3 consecutive operations:
+            1. Batch normalization
+            2. ReLU
+            3. 3 x 3 convolution
+
+    :param current:
+    :param num_outputs:
+    :param kernel_size:
+    :param scope:
+    :return:
+    """
     current = slim.batch_norm(current, scope=scope + '_bn')
     current = tf.nn.relu(current)
     current = slim.conv2d(current, num_outputs, kernel_size, scope=scope + '_conv')
@@ -21,13 +33,47 @@ def bn_act_conv_drp(current, num_outputs, kernel_size, scope='block'):
 
 
 def block(net, layers, growth, scope='block'):
+    """
+        Although each layer only produces k output feature-maps, it typically has many more inputs.
+        It has been noted that a 1 x 1 convolution can be introduced as bottleneck layer
+            before each 3 x 3 convolution to reduce the number of input feature-maps, and thus to improve computational efficiency.
+    :param net:
+    :param layers:
+    :param growth:
+    :param scope:
+    :return:
+    """
     for idx in range(layers):
-        bottleneck = bn_act_conv_drp(net, 4 * growth, [1, 1],
+        bottleneck = bn_act_conv_drp(net, growth, [1, 1],
                                      scope=scope + '_conv1x1' + str(idx))
         tmp = bn_act_conv_drp(bottleneck, growth, [3, 3],
                               scope=scope + '_conv3x3' + str(idx))
         net = tf.concat(axis=3, values=[net, tmp])
+        net = add_transition_layer(net, scope=scope + "_tran_" + str(idx))
     return net
+
+
+def add_transition_layer(net, scope):
+    """
+        The transition layers used in our experiments consist of:
+            a batch normalization layer
+            and an 1 x 1 convolutional layer
+            followed by a 2 x 2 average pooling layer.
+
+        Compression:
+            To further improve model compactness, we can reduce the number of feature-maps at transition layers.
+            We refer the DenseNEt with theta < 1 as DenseNet-C, and we set theta = 0.5 in our experiment.
+            When both the bottleneck and transition layers with theta < 1 are used, we refer to our model as DenseNet-BC.
+    :param net:
+    :param scope:
+    :return:
+    """
+    with tf.variable_scope(scope):
+        net = slim.batch_norm(net, scope=scope + "_bn")
+        net = slim.conv2d(net, 12, [1, 1], scope=scope + "_conv")
+        net = slim.avg_pool2d(net, [2, 2])
+        net = slim.dropout(net, keep_prob=0.5, scope=scope + "_dropout")
+        return net
 
 
 def densenet(images, num_classes=1001, is_training=False,
@@ -49,7 +95,7 @@ def densenet(images, num_classes=1001, is_training=False,
       end_points: a dictionary from components of the network to the corresponding
         activation.
     """
-    growth = 24
+    growth = 12
     compression_rate = 0.5
 
     def reduce_dim(input_feature):
@@ -70,39 +116,41 @@ def densenet(images, num_classes=1001, is_training=False,
                 """
                 conv0 = slim.conv2d(images, 16, [7, 7])
                 pool0 = slim.avg_pool2d(conv0, 2)
+                net = block(pool0, 3, 12)
 
-            end_point = 'Block_1'
-            with tf.variable_scope(end_point):
-                net1 = bn_act_conv_drp(pool0, 12, 1, scope='Bottleneck_1')
-                net1 = bn_act_conv_drp(net1, 12, 3, scope='Conv_1')
-                net1 = tf.concat(axis=3, values=(pool0, net1))
-            end_points[end_point] = net1
-
-            end_point = 'Block_2'
-            with tf.variable_scope(end_point):
-                net2 = bn_act_conv_drp(net1, 12, 1, scope='Bottleneck_2')
-                net2 = bn_act_conv_drp(net2, 12, 3, scope='Conv_2')
-                net2 = tf.concat(axis=3, values=(net1, net2))
-            end_points[end_point] = net2
-
-            end_point = 'Block_3'
-            with tf.variable_scope(end_point):
-                net3 = bn_act_conv_drp(net2, 12, 1, scope='Bottleneck_3')
-                net3 = bn_act_conv_drp(net3, 12, 3, scope='Conv_3')
-                net3 = tf.concat(axis=3, values=(net2, net3))
-            end_points[end_point] = net3
+            # end_point = 'Block_1'
+            # with tf.variable_scope(end_point):
+            #     net1_input = pool0
+            #     net1 = block(net1_input, 12, growth, scope='Net_1')
+            #     net1 = add_transition_layer(net1, scope='Transition_1')
+            #
+            # # end_points[end_point] = net1
+            #
+            # end_point = 'Block_2'
+            # with tf.variable_scope(end_point):
+            #     net2_input = net1
+            #     net2 = block(net2_input, 12, growth, scope='Net_2')
+            #     net2 = add_transition_layer(net2, scope='Transition_2')
+            # # end_points[end_point] = net2
+            #
+            # end_point = 'Block_3'
+            # with tf.variable_scope(end_point):
+            #     net3_input = net2
+            #     net3 = block(net3_input, 12, growth, scope='Net_3')
+            #     net3 = add_transition_layer(net3, scope='Transition_3')
+            # # end_points[end_point] = net3
 
             # 接入输出层
             end_point = 'Output'
             with tf.variable_scope(end_point):
-                output = slim.batch_norm(net3, is_training=True)
+                output = slim.batch_norm(net, is_training=True)
                 output = tf.nn.relu(output)
                 output_kernel = int(output.get_shape()[-2])
                 output = slim.avg_pool2d(output, [output_kernel, output_kernel])
                 output = slim.fully_connected(output, num_classes)
 
                 logits = tf.reshape(output, [-1, num_classes])
-            end_points[end_point] = logits
+            # end_points[end_point] = logits
 
             ##########################
 
